@@ -1,5 +1,8 @@
 import json
 from datetime import datetime
+from typing import Optional
+
+from .predictor import expected_goal_lambda, over25_probability, btts_probability
 
 STATUS_WAITING = 'Gözləmədə'
 STATUS_CORRECT = 'Düzgün'
@@ -10,19 +13,16 @@ STATUS_NODATA = 'Məlumat çatışmır'
 
 def evaluate_prediction(prediction, match_result):
     """
-    prediction: dict-like with keys market, selection, probability, created_at (ISO str), prediction_type ('pre'/'live')
-    match_result: dict-like with keys full_time_score (e.g., '2-1'), stats (dict)
+    Keep existing evaluation logic for settled matches.
     """
     market = prediction.get('market')
-    # parse scores
     try:
-        if not match_result or match_result.get('status') in ['postponed','cancelled','abandoned']:
+        if not match_result or match_result.get('status') in ['postponed', 'cancelled', 'abandoned']:
             return STATUS_CANCELLED
     except Exception:
         return STATUS_NODATA
 
     stats = match_result.get('stats') or {}
-    # parse full-time score
     fts = match_result.get('full_time_score')
     if fts:
         try:
@@ -41,9 +41,11 @@ def evaluate_prediction(prediction, match_result):
     if market == 'under_2_5':
         return STATUS_CORRECT if total_goals <= 2 else STATUS_WRONG
     if market == 'btts':
-        return STATUS_CORRECT if home_goals >=1 and away_goals >=1 else STATUS_WRONG
+        return STATUS_CORRECT if home_goals >= 1 and away_goals >= 1 else STATUS_WRONG
     if market == 'btts_no':
-        return STATUS_CORRECT if not (home_goals >=1 and away_goals >=1) else STATUS_WRONG
+        return STATUS_CORRECT if not (home_goals >= 1 and away_goals >= 1) else STATUS_WRONG
+
+    # corners and team corners
     if market == 'first_half_over_4_5_corners':
         fh = stats.get('first_half') or {}
         corners = fh.get('corners')
@@ -61,7 +63,6 @@ def evaluate_prediction(prediction, match_result):
             return STATUS_NODATA
         return STATUS_CORRECT if corners >= 11 else STATUS_WRONG
     if market == 'team_corners':
-        # selection should be 'home:5' or 'away:3' format
         sel = prediction.get('selection')
         try:
             side, val = sel.split(':')
@@ -73,10 +74,9 @@ def evaluate_prediction(prediction, match_result):
         except Exception:
             return STATUS_NODATA
 
-    # next goal candidate and live additional goal rely on event timelines — we leave as NODATA if not present
+    # next goal candidate and live added goal retain original behavior
     if market == 'next_goal_candidate':
         events = match_result.get('events') or []
-        # prediction must include timestamp
         created_at = prediction.get('created_at')
         if not created_at:
             return STATUS_NODATA
@@ -100,3 +100,54 @@ def evaluate_prediction(prediction, match_result):
         return STATUS_WRONG
 
     return STATUS_NODATA
+
+
+# New: evaluate a scheduled match using recent stats and Poisson model
+def evaluate_match_for_predictions(match: dict, stats_repo, league_avg: Optional[float], config: dict) -> dict:
+    """
+    match: dict with keys home_team_id, away_team_id, league, kickoff, fixture_id (match id)
+    stats_repo: StatsRepo instance
+    league_avg: float average goals per team in league (fallback to 1.35)
+    config: config dict with thresholds and stats params
+    Returns dict with probabilities and candidate flags or status 'insufficient_data'.
+    """
+    min_matches = config.get('stats', {}).get('min_matches_required', 6)
+    recent_count = config.get('stats', {}).get('recent_matches_count', 8)
+    half_life = config.get('stats', {}).get('decay_half_life_matches', 5)
+
+    home_id = match.get('home_team_id')
+    away_id = match.get('away_team_id')
+    if not home_id or not away_id:
+        return {'status': 'insufficient_data'}
+
+    # fetch recent goals; home_away param ensures we use home/away contexts if available
+    home_gf = stats_repo.get_recent_goals_for(home_id, limit=recent_count, home_away='home')
+    home_ga = stats_repo.get_recent_goals_against(home_id, limit=recent_count, home_away='home')
+    away_gf = stats_repo.get_recent_goals_for(away_id, limit=recent_count, home_away='away')
+    away_ga = stats_repo.get_recent_goals_against(away_id, limit=recent_count, home_away='away')
+
+    if len(home_gf) < min_matches or len(away_gf) < min_matches or len(home_ga) < min_matches or len(away_ga) < min_matches:
+        return {'status': 'insufficient_data'}
+
+    lam_home = expected_goal_lambda(home_gf, away_ga, league_avg=league_avg or 1.35, half_life=half_life)
+    lam_away = expected_goal_lambda(away_gf, home_ga, league_avg=league_avg or 1.35, half_life=half_life)
+
+    if lam_home is None or lam_away is None:
+        return {'status': 'insufficient_data'}
+
+    over_prob = over25_probability(lam_home, lam_away)
+    btts_prob = btts_probability(lam_home, lam_away)
+
+    # apply thresholds from config
+    over_thresh = config.get('thresholds', {}).get('over25_min_prob', 0.7)
+    btts_thresh = config.get('thresholds', {}).get('btts_min_prob', 0.75)
+
+    return {
+        'status': 'ok',
+        'over25_prob': round(over_prob, 3) if over_prob is not None else None,
+        'btts_prob': round(btts_prob, 3) if btts_prob is not None else None,
+        'over25_candidate': (over_prob is not None and over_prob >= over_thresh),
+        'btts_candidate': (btts_prob is not None and btts_prob >= btts_thresh),
+        'lambda_home': round(lam_home, 3),
+        'lambda_away': round(lam_away, 3)
+    }
