@@ -1,26 +1,54 @@
 import math
+from typing import List, Optional
 
-def safe_prob(p):
-    # clamp and avoid 0/1 extremes
-    if p is None:
+# Weighted mean with exponential decay
+def weighted_mean(values: List[float], half_life: int = 5) -> Optional[float]:
+    if not values:
         return None
-    p = max(0.01, min(0.99, p))
-    return p
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for age, v in enumerate(reversed(values)):
+        weight = 0.5 ** (age / half_life)
+        weighted_sum += v * weight
+        total_weight += weight
+    return weighted_sum / total_weight if total_weight else None
 
-def estimate_over_2_5(home_goals_avg, away_goals_avg, sample_size):
-    # simple heuristic: mean total goals = home_avg + away_avg
-    if sample_size < 5:
-        return None  # insufficient data
-    mean = home_goals_avg + away_goals_avg
-    # map mean to probability via logistic-like mapping
-    p = 1 / (1 + math.exp(1.5 - mean))
-    return safe_prob(p)
 
-def estimate_btts(home_btts_rate, away_btts_rate, sample_size):
-    if sample_size < 5:
+def poisson_pmf(k: int, lam: float) -> float:
+    if lam < 0:
+        return 0.0
+    return (lam ** k) * math.exp(-lam) / math.factorial(k)
+
+
+def over25_probability(lambda_home: Optional[float], lambda_away: Optional[float]) -> Optional[float]:
+    if lambda_home is None or lambda_away is None:
         return None
-    # combine rates with Laplace smoothing
-    p = (home_btts_rate + away_btts_rate) / 2
-    return safe_prob(p)
+    lambda_total = lambda_home + lambda_away
+    p0 = poisson_pmf(0, lambda_total)
+    p1 = poisson_pmf(1, lambda_total)
+    p2 = poisson_pmf(2, lambda_total)
+    prob = 1.0 - (p0 + p1 + p2)
+    return max(0.0, min(1.0, prob))
 
-# Additional simple estimators can be added similarly
+
+def btts_probability(lambda_home: Optional[float], lambda_away: Optional[float]) -> Optional[float]:
+    if lambda_home is None or lambda_away is None:
+        return None
+    p_home_scores = 1.0 - math.exp(-lambda_home)
+    p_away_scores = 1.0 - math.exp(-lambda_away)
+    prob = p_home_scores * p_away_scores
+    return max(0.0, min(1.0, prob))
+
+
+def expected_goal_lambda(team_gf_recent: List[float], opponent_ga_recent: List[float], league_avg: Optional[float] = None, half_life: int = 5) -> Optional[float]:
+    t = weighted_mean(team_gf_recent, half_life)
+    o = weighted_mean(opponent_ga_recent, half_life)
+    if t is None or o is None:
+        return None
+    lam = (t + o) / 2.0
+    if league_avg:
+        try:
+            lam *= (league_avg / 1.35)
+        except Exception:
+            pass
+    return max(0.01, lam)
