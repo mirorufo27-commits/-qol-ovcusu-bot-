@@ -189,9 +189,8 @@ def build_prediction_message(api, config, repo=None):
 
     if repo is None:
         repo = StatsRepo(api)
-    lines = ["⚽ QOL OVÇUSU — OYUNÖNCƏSİ ANALİZ", ""]
-    shown = 0
-    analyzed = 0
+
+    ranked = []
     insufficient = 0
 
     for match in fixtures[:MAX_MATCHES_TO_ANALYZE]:
@@ -206,67 +205,100 @@ def build_prediction_message(api, config, repo=None):
             insufficient += 1
             continue
 
-        analyzed += 1
-        selections = [
-            ("over25_candidate", "over25_prob", "2.5 ÜST"),
-            ("btts_candidate", "btts_prob", "QOL-QOL (BTTS)"),
+        over_prob = result.get("over25_prob")
+        btts_prob = result.get("btts_prob")
+        probabilities = [
+            p for p in (over_prob, btts_prob)
+            if isinstance(p, (int, float)) and 0 <= p <= 1
         ]
 
-        result_probs = match_result_probabilities(
-            result.get("lambda_home"),
-            result.get("lambda_away"),
+        if not probabilities:
+            continue
+
+        best_probability = max(probabilities)
+
+        # Yalnız hesablanmış ehtimalları sıralayırıq.
+        # 50%-dən aşağı seçimləri siqnal kimi göstərmirik.
+        if best_probability <= 0.50:
+            continue
+
+        kickoff = parse_kickoff(match.get("kickoff"))
+        kickoff_text = (
+            kickoff.astimezone().strftime("%d.%m %H:%M")
+            if kickoff else "Vaxt məlum deyil"
         )
-        if result_probs:
-            result_labels = {
-                "home_win": "1 — Ev sahibi qələbəsi",
-                "draw": "X — Heç-heçə",
-                "away_win": "2 — Səfər qələbəsi",
-            }
-            best_key = max(result_probs, key=result_probs.get)
-            best_probability = result_probs[best_key]
-            if 0.40 <= best_probability <= MAX_DISPLAY_PROBABILITY:
-                selections.append((
-                    "result_candidate",
-                    "result_probability",
-                    result_labels[best_key],
-                ))
-                result["result_candidate"] = True
-                result["result_probability"] = best_probability
-        for candidate_key, probability_key, market_name in selections:
-            probability = result.get(probability_key)
-            if not result.get(candidate_key) or probability is None:
-                continue
 
-            # Very extreme outputs are withheld rather than presented as certainty.
-            if probability > MAX_DISPLAY_PROBABILITY:
-                continue
+        ranked.append({
+            "match": match,
+            "result": result,
+            "best_probability": best_probability,
+            "kickoff_text": kickoff_text,
+        })
 
-            kickoff = parse_kickoff(match.get("kickoff"))
-            kickoff_text = kickoff.astimezone().strftime("%d.%m %H:%M") if kickoff else "Vaxt məlum deyil"
+    ranked.sort(key=lambda item: item["best_probability"], reverse=True)
+    selected = ranked[:5]
 
-            lines.extend([
-                f"🏆 {match['league']}",
-                f"⚽ {match['home_team']} — {match['away_team']}",
-                f"🕒 {kickoff_text}",
-                f"🎯 Bazar: {market_name}",
-                f"📊 Model ehtimalı: {round(probability * 100)}%",
-                "",
-            ])
-            shown += 1
-
-    if shown == 0:
+    if not selected:
         return (
             "⚽ QOL OVÇUSU — OYUNÖNCƏSİ ANALİZ\n\n"
             f"Yoxlanılan oyun: {min(len(fixtures), MAX_MATCHES_TO_ANALYZE)}\n"
             f"Kifayət qədər statistikası olmayan: {insufficient}\n\n"
-            "Meyarlara uyğun etibarlı seçim tapılmadı. "
-            "Ehtimalları süni artırmırıq."
+            "Hesablanmış ehtimallara görə uyğun siqnal tapılmadı. "
+            "Ehtimallar süni artırılmır."
         )
 
-    lines.append(f"Yoxlanılan oyun: {min(len(fixtures), MAX_MATCHES_TO_ANALYZE)}")
-    lines.append("Qeyd: ehtimallar model hesablamasıdır, zəmanət deyil.")
-    return "\n".join(lines)
+    lines = ["📋 Oyunöncəsi Analiz", ""]
 
+    for item in selected:
+        match = item["match"]
+        result = item["result"]
+        over_prob = result.get("over25_prob")
+        btts_prob = result.get("btts_prob")
+        lam_home = result.get("lambda_home")
+        lam_away = result.get("lambda_away")
+
+        expected_goals = (
+            lam_home + lam_away
+            if isinstance(lam_home, (int, float))
+            and isinstance(lam_away, (int, float))
+            else None
+        )
+
+        if over_prob is not None and (
+            btts_prob is None or over_prob >= btts_prob
+        ):
+            signal = f"2.5 ÜST qol ({round(over_prob * 100)}% ehtimal)"
+        elif btts_prob is not None:
+            signal = f"QOL-QOL ({round(btts_prob * 100)}% ehtimal)"
+        else:
+            continue
+
+        lines.extend([
+            f"📅 {match['home_team']} vs {match['away_team']}",
+            f"🏆 {match['league']}",
+            f"🕒 {item['kickoff_text']}",
+            "",
+            f"📈 2.5 ÜST qol: {round(over_prob * 100)}%"
+            if over_prob is not None else "📈 2.5 ÜST qol: məlumat yoxdur",
+            f"⚽ Hər iki qol (BTTS): {round(btts_prob * 100)}%"
+            if btts_prob is not None else "⚽ Hər iki qol (BTTS): məlumat yoxdur",
+            f"🎯 Gözlənilən ümumi qol: {expected_goals:.1f}"
+            if expected_goals is not None else "🎯 Gözlənilən ümumi qol: məlumat yoxdur",
+            "",
+            "Əsaslandırma:",
+            "📊 Ev sahibinin evdə və qonağın səfərdə son oyunlarının qol statistikası əsasında.",
+            "",
+            f"Oyunöncəsi siqnal: {signal}",
+            "",
+            "— — —",
+            "",
+        ])
+
+    lines.append(
+        f"Qeyd: {min(len(fixtures), MAX_MATCHES_TO_ANALYZE)} oyun yoxlanıldı. "
+        "Ehtimallar model hesablamasıdır, zəmanət deyil."
+    )
+    return "\n".join(lines)
 
 def main():
     parser = argparse.ArgumentParser()
