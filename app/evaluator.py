@@ -136,18 +136,28 @@ def evaluate_match_for_predictions(match: dict, stats_repo, league_avg: Optional
         return {'status': 'insufficient_data'}
 
     over_prob = over25_probability(lam_home, lam_away)
-    btts_prob = btts_probability(lam_home, lam_away)
+btts_prob = btts_probability(lam_home, lam_away)
 
     # apply thresholds from config
     over_thresh = config.get('thresholds', {}).get('over25_min_prob', 0.7)
     btts_thresh = config.get('thresholds', {}).get('btts_min_prob', 0.75)
 
+        over_prob = over25_probability(lam_home, lam_away)
+    under_prob = under25_probability(lam_home, lam_away)
+    btts_prob = btts_probability(lam_home, lam_away)
+
+    over_thresh = config.get('thresholds', {}).get('over25_min_prob', 0.7)
+    under_thresh = config.get('thresholds', {}).get('under25_min_prob', 0.7)
+    btts_thresh = config.get('thresholds', {}).get('btts_min_prob', 0.75)
+
     return {
         'status': 'ok',
         'over25_prob': round(over_prob, 3) if over_prob is not None else None,
+        'under25_prob': round(under_prob, 3) if under_prob is not None else None,
         'btts_prob': round(btts_prob, 3) if btts_prob is not None else None,
-        'over25_candidate': (over_prob is not None and over_prob >= over_thresh),
-        'btts_candidate': (btts_prob is not None and btts_prob >= btts_thresh),
+        'over25_candidate': over_prob is not None and over_prob >= over_thresh,
+        'under25_candidate': under_prob is not None and under_prob >= under_thresh,
+        'btts_candidate': btts_prob is not None and btts_prob >= btts_thresh,
         'lambda_home': round(lam_home, 3),
         'lambda_away': round(lam_away, 3)
     }
