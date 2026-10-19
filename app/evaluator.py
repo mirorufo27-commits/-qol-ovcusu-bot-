@@ -148,9 +148,9 @@ def evaluate_match_for_predictions(
     ):
         return {'status': 'insufficient_data'}
 
-    avg = league_avg or 1.35
+    avg = league_avg
     lam_home = expected_goal_lambda(
-        home_gf, away_ga, league_avg=avg, half_life=half_life
+        home_gf, away_ga, league_avg=avg, half_life=half_life, home=True
     )
     lam_away = expected_goal_lambda(
         away_gf, home_ga, league_avg=avg, half_life=half_life

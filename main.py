@@ -198,7 +198,7 @@ def build_prediction_message(api, config, repo=None):
         result = evaluate_match_for_predictions(
             match=match,
             stats_repo=repo,
-            league_avg=1.35,
+            league_avg=None,
             config=config,
         )
 

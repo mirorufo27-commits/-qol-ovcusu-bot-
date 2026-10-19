@@ -107,9 +107,6 @@ def expected_goal_lambda(
     if home:
         lam += home_advantage
 
-    # Use league average only when it represents a per-team goal average.
-    if league_avg is not None and league_avg > 0:
-        lam *= league_avg / 1.35
 
     return max(0.01, min(5.0, lam))
 
