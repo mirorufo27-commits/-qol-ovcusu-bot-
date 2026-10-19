@@ -152,3 +152,11 @@ def team_corner_probability(lambda_team: Optional[float]) -> Optional[float]:
         return None
     p = 1.0 - math.exp(-lambda_team)
     return max(0.0, min(1.0, p))
+
+def estimate_over_2_5(lambda_home, lambda_away):
+    return over25_probability(lambda_home, lambda_away)
+
+
+def estimate_btts(lambda_home, lambda_away):
+    return btts_probability(lambda_home, lambda_away)
+    
