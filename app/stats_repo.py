@@ -20,6 +20,7 @@ class StatsRepo:
 
     def __init__(self, api: FootballAPI):
         self.api = api
+        self._team_fixture_cache = {}
 
     @staticmethod
     def _fixture_data(match):
@@ -68,6 +69,16 @@ class StatsRepo:
         return True
 
     def _safe_fetch_team_fixtures(
+        self, team_id: int, limit: int = 8, home_away: str = 'all'
+    ) -> List[dict]:
+        cache_key = (team_id, limit, home_away)
+        if cache_key not in self._team_fixture_cache:
+            self._team_fixture_cache[cache_key] = self._fetch_team_fixtures_uncached(
+                team_id, limit, home_away
+            )
+        return self._team_fixture_cache[cache_key]
+
+    def _fetch_team_fixtures_uncached(
         self, team_id: int, limit: int = 8, home_away: str = 'all'
     ) -> List[dict]:
         if not self.api or not getattr(self.api, 'key', None):
