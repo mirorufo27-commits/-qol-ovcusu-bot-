@@ -32,6 +32,17 @@ def over25_probability(lambda_home: Optional[float], lambda_away: Optional[float
     return max(0.0, min(1.0, prob))
 
 
+def under25_probability(lambda_home: Optional[float], lambda_away: Optional[float]) -> Optional[float]:
+    if lambda_home is None or lambda_away is None:
+        return None
+    lambda_total = lambda_home + lambda_away
+    p0 = poisson_pmf(0, lambda_total)
+    p1 = poisson_pmf(1, lambda_total)
+    p2 = poisson_pmf(2, lambda_total)
+    prob = p0 + p1 + p2
+    return max(0.0, min(1.0, prob))
+
+
 def btts_probability(lambda_home: Optional[float], lambda_away: Optional[float]) -> Optional[float]:
     if lambda_home is None or lambda_away is None:
         return None
@@ -99,12 +110,18 @@ def expected_goal_lambda(
 
     return max(0.01, lam)
 
+
 # --- Corner-specific functions (unchanged logic; never inferred from goals) ---
-def expected_corner_lambda(team_corners_recent: List[float], opponent_corners_against_recent: List[float], half_life: int = 5) -> Optional[float]:
+def expected_corner_lambda(team_corners_recent: List[float], opponent_corners_against_recent: List[float], half_life: int = 5, min_sample: int = 6) -> Optional[float]:
     """
     Estimate expected corners (lambda) for a team using recent corners-for and opponent corners-against.
     Requires real corner history (first-half or full-match depending on caller).
+    Returns None if sample sizes are less than min_sample to avoid producing ungrounded probabilities.
     """
+    if not team_corners_recent or not opponent_corners_against_recent:
+        return None
+    if len(team_corners_recent) < min_sample or len(opponent_corners_against_recent) < min_sample:
+        return None
     t = weighted_mean(team_corners_recent, half_life)
     o = weighted_mean(opponent_corners_against_recent, half_life)
     if t is None or o is None:
