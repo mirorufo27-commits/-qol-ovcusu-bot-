@@ -1,57 +1,69 @@
+
 import math
 from typing import List, Optional, Dict
 
-# --- Goal-based helpers (Poisson) ---
-def weighted_mean(values: List[float], half_life: int = 5) -> Optional[float]:
+
+def weighted_mean(
+    values: List[float],
+    half_life: int = 5
+) -> Optional[float]:
     if not values:
         return None
+
+    half_life = max(1, half_life)
     weighted_sum = 0.0
     total_weight = 0.0
-    # newest values last in list
-    for age, v in enumerate(reversed(values)):
+
+    for age, value in enumerate(reversed(values)):
         weight = 0.5 ** (age / half_life)
-        weighted_sum += v * weight
+        weighted_sum += float(value) * weight
         total_weight += weight
+
     return weighted_sum / total_weight if total_weight else None
 
 
 def poisson_pmf(k: int, lam: float) -> float:
-    if lam < 0:
+    if k < 0 or lam < 0:
         return 0.0
     return (lam ** k) * math.exp(-lam) / math.factorial(k)
 
 
-def over25_probability(lambda_home: Optional[float], lambda_away: Optional[float]) -> Optional[float]:
+def over25_probability(
+    lambda_home: Optional[float],
+    lambda_away: Optional[float]
+) -> Optional[float]:
     if lambda_home is None or lambda_away is None:
         return None
-    lambda_total = lambda_home + lambda_away
-    p0 = poisson_pmf(0, lambda_total)
-    p1 = poisson_pmf(1, lambda_total)
-    p2 = poisson_pmf(2, lambda_total)
-    prob = 1.0 - (p0 + p1 + p2)
-    return max(0.0, min(1.0, prob))
+
+    total = max(0.0, lambda_home) + max(0.0, lambda_away)
+    probability = 1.0 - sum(poisson_pmf(k, total) for k in range(3))
+    return max(0.0, min(1.0, probability))
 
 
-def under25_probability(lambda_home: Optional[float], lambda_away: Optional[float]) -> Optional[float]:
+def under25_probability(
+    lambda_home: Optional[float],
+    lambda_away: Optional[float]
+) -> Optional[float]:
     if lambda_home is None or lambda_away is None:
         return None
-    lambda_total = lambda_home + lambda_away
-    p0 = poisson_pmf(0, lambda_total)
-    p1 = poisson_pmf(1, lambda_total)
-    p2 = poisson_pmf(2, lambda_total)
-    prob = p0 + p1 + p2
-    return max(0.0, min(1.0, prob))
+
+    total = max(0.0, lambda_home) + max(0.0, lambda_away)
+    probability = sum(poisson_pmf(k, total) for k in range(3))
+    return max(0.0, min(1.0, probability))
 
 
-def btts_probability(lambda_home: Optional[float], lambda_away: Optional[float]) -> Optional[float]:
+def btts_probability(
+    lambda_home: Optional[float],
+    lambda_away: Optional[float]
+) -> Optional[float]:
     if lambda_home is None or lambda_away is None:
         return None
-    p_home_scores = 1.0 - math.exp(-lambda_home)
-    p_away_scores = 1.0 - math.exp(-lambda_away)
-    prob = p_home_scores * p_away_scores
-    return max(0.0, min(1.0, prob))
 
-# --- Enhanced expected goal lambda (use opponent strength, home advantage, league scaling) ---
+    home_scores = 1.0 - math.exp(-max(0.0, lambda_home))
+    away_scores = 1.0 - math.exp(-max(0.0, lambda_away))
+    return max(0.0, min(1.0, home_scores * away_scores))
+
+
 def expected_goal_lambda(
     team_gf_recent: List[float],
     opponent_ga_recent: List[float],
@@ -64,99 +76,74 @@ def expected_goal_lambda(
     home_advantage: float = 0.12,
     min_matches_required: int = 6
 ) -> Optional[float]:
-    """
-    Compute expected goal lambda for a team using:
-      - team's GF recent (home/away split as provided)
-      - opponent's GA recent (home/away split as provided)
-      - optional opponent GF recent and team's GA recent for additional context
-    Weights (defaults) apply more weight to team's own scoring.
-    If data insufficient (len < min_matches_required) return None.
-    """
-    weights = weights or {'alpha': 0.6, 'beta': 0.25, 'gamma': 0.1, 'delta': 0.05}
     if not team_gf_recent or not opponent_ga_recent:
         return None
-    # Ensure sample size requirement
-    if len(team_gf_recent) < min_matches_required or len(opponent_ga_recent) < min_matches_required:
+
+    if (
+        len(team_gf_recent) < min_matches_required
+        or len(opponent_ga_recent) < min_matches_required
+    ):
         return None
 
-    t = weighted_mean(team_gf_recent, half_life)
-    o = weighted_mean(opponent_ga_recent, half_life)
-    opp = weighted_mean(opponent_gf_recent, half_life) if opponent_gf_recent else None
-    tg = weighted_mean(team_ga_recent, half_life) if team_ga_recent else None
+    team_attack = weighted_mean(team_gf_recent, half_life)
+    opponent_defence = weighted_mean(opponent_ga_recent, half_life)
 
-    if t is None or o is None:
+    if team_attack is None or opponent_defence is None:
         return None
 
-    alpha = weights.get('alpha', 0.6)
-    beta = weights.get('beta', 0.25)
-    gamma = weights.get('gamma', 0.1)
-    delta = weights.get('delta', 0.05)
+    # Combine the team's scoring form with the opponent's goals conceded.
+    lam = (team_attack + opponent_defence) / 2.0
 
-    lam = alpha * t + beta * o
-    if opp is not None:
-        lam += gamma * opp
-    if tg is not None:
-        lam += delta * tg
+    if opponent_gf_recent:
+        opponent_attack = weighted_mean(opponent_gf_recent, half_life)
+        if opponent_attack is not None:
+            lam = 0.8 * lam + 0.2 * opponent_attack
+
+    if team_ga_recent:
+        team_defence = weighted_mean(team_ga_recent, half_life)
+        if team_defence is not None:
+            lam = 0.8 * lam + 0.2 * team_defence
 
     if home:
         lam += home_advantage
 
-    # scale by league average (protect against None)
+    # Use league average only when it represents a per-team goal average.
     if league_avg is not None and league_avg > 0:
-        try:
-            lam *= (league_avg / 1.35)
-        except Exception:
-            pass
+        lam *= league_avg / 1.35
 
-    return max(0.01, lam)
+    return max(0.01, min(5.0, lam))
 
 
-# --- Corner-specific functions (unchanged logic; never inferred from goals) ---
-def expected_corner_lambda(team_corners_recent: List[float], opponent_corners_against_recent: List[float], half_life: int = 5, min_sample: int = 6) -> Optional[float]:
-    """
-    Estimate expected corners (lambda) for a team using recent corners-for and opponent corners-against.
-    Requires real corner history (first-half or full-match depending on caller).
-    Returns None if sample sizes are less than min_sample to avoid producing ungrounded probabilities.
-    """
-    if not team_corners_recent or not opponent_corners_against_recent:
+def estimate_over_2_5(
+    lambda_home,
+    lambda_away,
+    sample_size=None
+):
+    if sample_size is not None and sample_size < 6:
         return None
-    if len(team_corners_recent) < min_sample or len(opponent_corners_against_recent) < min_sample:
-        return None
-    t = weighted_mean(team_corners_recent, half_life)
-    o = weighted_mean(opponent_corners_against_recent, half_life)
-    if t is None or o is None:
-        return None
-    lam = (t + o) / 2.0
-    return max(0.01, lam)
-
-
-def corner_over_probability(lambda_home_corners: Optional[float], lambda_away_corners: Optional[float], threshold: int, sample_size_home: int = 0, sample_size_away: int = 0, min_sample: int = 6) -> Optional[float]:
-    """
-    Probability total corners >= threshold using Poisson on total lambda.
-    Additional safety: if sample sizes less than min_sample, return None (insufficient data).
-    """
-    if lambda_home_corners is None or lambda_away_corners is None:
-        return None
-    if sample_size_home < min_sample or sample_size_away < min_sample:
-        return None
-    lambda_total = lambda_home_corners + lambda_away_corners
-    cdf = 0.0
-    for k in range(0, threshold):
-        cdf += poisson_pmf(k, lambda_total)
-    prob = 1.0 - cdf
-    return max(0.0, min(1.0, prob))
-
-
-def team_corner_probability(lambda_team: Optional[float]) -> Optional[float]:
-    if lambda_team is None:
-        return None
-    p = 1.0 - math.exp(-lambda_team)
-    return max(0.0, min(1.0, p))
-
-def estimate_over_2_5(lambda_home, lambda_away):
     return over25_probability(lambda_home, lambda_away)
 
 
-def estimate_btts(lambda_home, lambda_away):
+def estimate_btts(
+    lambda_home,
+    lambda_away,
+    sample_size=None
+):
+    if sample_size is not None and sample_size < 6:
+        return None
     return btts_probability(lambda_home, lambda_away)
+
+
+# Corner predictions are disabled.
+# Keep these functions temporarily so older imports do not crash.
+def expected_corner_lambda(*args, **kwargs):
+    return None
+
+
+def corner_over_probability(*args, **kwargs):
+    return None
+
+
+def team_corner_probability(*args, **kwargs):
+    return None
     
