@@ -36,7 +36,7 @@ def test_under_high_prevents_over_candidate():
 def test_over_high_selects_over_candidate():
     class SR:
         def get_recent_goals_for(self, team_id, limit=8, home_away='all'):
-            return [2.0]*8 if team_id == 1 else [1.8]*8
+            return [2.6]*8 if team_id == 1 else [2.4]*8
         def get_recent_goals_against(self, team_id, limit=8, home_away='all'):
             return [1.0]*8
         def get_recent_corners_for(self, *a, **k): return []

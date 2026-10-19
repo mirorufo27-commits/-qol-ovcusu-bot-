@@ -1,142 +1,166 @@
-import os
 import json
+import os
 from typing import List
+
 from dotenv import load_dotenv
 from app.football_api import FootballAPI
 
 load_dotenv()
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data')
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR, exist_ok=True)
-
+os.makedirs(DATA_DIR, exist_ok=True)
 SENT_FILE = os.path.join(DATA_DIR, 'sent_predictions.json')
 
+FINISHED_STATUSES = {'FT', 'AET', 'PEN'}
+
+
 class StatsRepo:
-    """
-    Minimal stats repository that fetches recent fixtures for a team using FootballAPI.
-    Provides get_recent_goals_for and get_recent_goals_against. Returns lists of goals scored/conceded.
-    If API key not configured or provider fails, returns empty lists.
-    """
+    """Fetch completed team fixtures and extract reliable goal statistics."""
+
     def __init__(self, api: FootballAPI):
         self.api = api
 
-    def _safe_fetch_team_fixtures(self, team_id: int, limit: int = 8, home_away: str = 'all') -> List[dict]:
+    @staticmethod
+    def _fixture_data(match):
+        if not isinstance(match, dict):
+            return {}, {}, {}, None, None
+
+        fixture = match.get('fixture') or {}
+        teams = match.get('teams') or {}
+        goals = match.get('goals') or {}
+        score = match.get('score') or {}
+        fulltime = score.get('fulltime') or score.get('full') or {}
+
+        home_goals = goals.get('home')
+        away_goals = goals.get('away')
+
+        if home_goals is None:
+            home_goals = fulltime.get('home')
+        if away_goals is None:
+            away_goals = fulltime.get('away')
+
+        status = (fixture.get('status') or {}).get('short')
+        return teams, fixture, status, home_goals, away_goals
+
+    @classmethod
+    def _is_finished(cls, match):
+        teams, fixture, status, home_goals, away_goals = cls._fixture_data(match)
+
+        if home_goals is None or away_goals is None:
+            return False
+
+        # If the provider supplies a status, require a completed match.
+        if status is not None:
+            return status in FINISHED_STATUSES
+
+        # Fallback for providers without a status field.
+        return True
+
+    def _safe_fetch_team_fixtures(
+        self, team_id: int, limit: int = 8, home_away: str = 'all'
+    ) -> List[dict]:
         if not self.api or not getattr(self.api, 'key', None):
             return []
-        try:
-            # api-football supports 'team' and 'last' params
-            resp = self.api.fetch_fixtures_paginated('https://api-football-v1.p.rapidapi.com/v3/fixtures', params={'team': team_id, 'last': limit})
-            # resp is list of fixtures
-            if not isinstance(resp, list):
-                # some providers return {'response': [...]} earlier normalized; handle both
-                resp = resp.get('response') if isinstance(resp, dict) else []
-            # filter by home/away if requested
-            fixtures = []
-            for f in resp:
-                # fixture structure varies; try to extract teams and scores
-                try:
-                    fixture = f.get('fixture') if isinstance(f, dict) and 'fixture' in f else f
-                    teams = f.get('teams') if isinstance(f, dict) and 'teams' in f else f.get('teams', {}) if isinstance(f, dict) else {}
-                except Exception:
-                    fixture = f
-                    teams = {}
-                # include raw fixture
-                fixtures.append(f)
-            return fixtures[:limit]
-        except Exception:
+
+        if home_away not in ('all', 'home', 'away'):
             return []
 
-    def get_recent_goals_for(self, team_id: int, limit: int = 8, home_away: str = 'all'):
-        fixtures = self._safe_fetch_team_fixtures(team_id, limit=limit, home_away=home_away)
-        goals = []
-        for f in fixtures:
-            try:
-                # depending on provider shape
-                score = None
-                if 'score' in f and isinstance(f['score'], dict):
-                    # api-football nested
-                    home = f.get('teams', {}).get('home', {})
-                    away = f.get('teams', {}).get('away', {})
-                    goals_home = f.get('goals', {}).get('home') or f.get('score', {}).get('fulltime', {}).get('home')
-                # try multiple shapes
-                if isinstance(f, dict):
-                    # api-football: f['goals'] sometimes present
-                    goals_home = None
-                    goals_away = None
-                    if 'goals' in f and isinstance(f['goals'], dict):
-                        goals_home = f['goals'].get('home')
-                        goals_away = f['goals'].get('away')
-                    else:
-                        # try nested
-                        if 'score' in f and isinstance(f['score'], dict):
-                            ft = f['score'].get('fulltime') or f['score'].get('full')
-                            if isinstance(ft, dict):
-                                goals_home = ft.get('home')
-                                goals_away = ft.get('away')
-                    teams = f.get('teams') or {}
-                    home_id = teams.get('home', {}).get('id') if isinstance(teams, dict) else None
-                    away_id = teams.get('away', {}).get('id') if isinstance(teams, dict) else None
-                    if home_id == team_id:
-                        if goals_home is not None:
-                            goals.append(goals_home)
-                    elif away_id == team_id:
-                        if goals_away is not None:
-                            goals.append(goals_away)
-            except Exception:
-                continue
-        return goals
-
-    def get_recent_goals_against(self, team_id: int, limit: int = 8, home_away: str = 'all'):
-        fixtures = self._safe_fetch_team_fixtures(team_id, limit=limit, home_away=home_away)
-        goals = []
-        for f in fixtures:
-            try:
-                goals_home = None
-                goals_away = None
-                if 'goals' in f and isinstance(f['goals'], dict):
-                    goals_home = f['goals'].get('home')
-                    goals_away = f['goals'].get('away')
-                else:
-                    if 'score' in f and isinstance(f['score'], dict):
-                        ft = f['score'].get('fulltime') or f['score'].get('full')
-                        if isinstance(ft, dict):
-                            goals_home = ft.get('home')
-                            goals_away = ft.get('away')
-                teams = f.get('teams') or {}
-                home_id = teams.get('home', {}).get('id') if isinstance(teams, dict) else None
-                away_id = teams.get('away', {}).get('id') if isinstance(teams, dict) else None
-                if home_id == team_id:
-                    if goals_away is not None:
-                        goals.append(goals_away)
-                elif away_id == team_id:
-                    if goals_home is not None:
-                        goals.append(goals_home)
-            except Exception:
-                continue
-        return goals
-
-    # Sent predictions tracking
-    def has_prediction_been_sent(self, match_id: int, market: str, selection: str) -> bool:
         try:
-            if not os.path.exists(SENT_FILE):
-                return False
-            with open(SENT_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception:
-            return False
-        key = f"{match_id}:{market}:{selection}"
-        return key in data
+            url = 'https://api-football-v1.p.rapidapi.com/v3/fixtures'
+            # Fetch extra fixtures because some may be unfinished or filtered out.
+            requested = max(limit * 3, limit)
+            response = self.api.fetch_fixtures_paginated(
+                url,
+                params={'team': team_id, 'last': requested}
+            )
 
-    def mark_prediction_sent(self, match_id: int, market: str, selection: str):
+            if isinstance(response, dict):
+                response = response.get('response') or []
+            if not isinstance(response, list):
+                return []
+
+            fixtures = []
+            for match in response:
+                if not isinstance(match, dict) or not self._is_finished(match):
+                    continue
+
+                teams, _, _, _, _ = self._fixture_data(match)
+                home = teams.get('home') or {}
+                away = teams.get('away') or {}
+
+                home_id = home.get('id')
+                away_id = away.get('id')
+
+                if home_away == 'home' and home_id != team_id:
+                    continue
+                if home_away == 'away' and away_id != team_id:
+                    continue
+                if home_id != team_id and away_id != team_id:
+                    continue
+
+                fixtures.append(match)
+                if len(fixtures) >= limit:
+                    break
+
+            return fixtures
+        except Exception as exc:
+            print(f'StatsRepo fixture fetch error: {exc}')
+            return []
+
+    def get_recent_goals_for(
+        self, team_id: int, limit: int = 8, home_away: str = 'all'
+    ):
+        goals = []
+        for match in self._safe_fetch_team_fixtures(team_id, limit, home_away):
+            teams, _, _, home_goals, away_goals = self._fixture_data(match)
+            home_id = (teams.get('home') or {}).get('id')
+            away_id = (teams.get('away') or {}).get('id')
+
+            if home_id == team_id:
+                goals.append(home_goals)
+            elif away_id == team_id:
+                goals.append(away_goals)
+
+        return goals
+
+    def get_recent_goals_against(
+        self, team_id: int, limit: int = 8, home_away: str = 'all'
+    ):
+        goals = []
+        for match in self._safe_fetch_team_fixtures(team_id, limit, home_away):
+            teams, _, _, home_goals, away_goals = self._fixture_data(match)
+            home_id = (teams.get('home') or {}).get('id')
+            away_id = (teams.get('away') or {}).get('id')
+
+            if home_id == team_id:
+                goals.append(away_goals)
+            elif away_id == team_id:
+                goals.append(home_goals)
+
+        return goals
+
+    def has_prediction_been_sent(
+        self, match_id: int, market: str, selection: str
+    ) -> bool:
+        try:
+            with open(SENT_FILE, 'r', encoding='utf-8') as file:
+                data = json.load(file)
+        except (OSError, ValueError):
+            return False
+
+        return f'{match_id}:{market}:{selection}' in data
+
+    def mark_prediction_sent(
+        self, match_id: int, market: str, selection: str
+    ):
         try:
             data = {}
             if os.path.exists(SENT_FILE):
-                with open(SENT_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            key = f"{match_id}:{market}:{selection}"
-            data[key] = True
-            with open(SENT_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f)
-        except Exception:
-            pass
+                with open(SENT_FILE, 'r', encoding='utf-8') as file:
+                    data = json.load(file)
+
+            data[f'{match_id}:{market}:{selection}'] = True
+            with open(SENT_FILE, 'w', encoding='utf-8') as file:
+                json.dump(data, file)
+        except (OSError, ValueError) as exc:
+            print(f'Could not save sent prediction: {exc}')

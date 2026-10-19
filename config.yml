@@ -1,6 +1,3 @@
-# config.yml
-# Configuration for Qol Ovçusu prediction engine
-
 top_leagues:
   - "English Premier League"
   - "UEFA Champions League"
@@ -9,8 +6,11 @@ top_leagues:
   - "Bundesliga"
   - "Serie A"
   - "Ligue 1"
-  - "Primeira Liga"
+  - "Turkish Super Lig"
+  - "Azerbaijan Premier League"
   - "Eredivisie"
+  - "Primeira Liga"
+  - "Belgian Pro League"
 
 thresholds:
   over25_min_prob: 0.70
@@ -22,5 +22,5 @@ stats:
   decay_half_life_matches: 5
 
 api:
-  max_retries: 5
+  max_retries: 3
   backoff_base_seconds: 0.5
