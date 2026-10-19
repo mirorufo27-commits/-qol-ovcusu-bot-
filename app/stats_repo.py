@@ -1,6 +1,7 @@
 import json
 import os
 from typing import List
+from datetime import date, timedelta
 
 from dotenv import load_dotenv
 from app.football_api import FootballAPI
@@ -11,7 +12,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
 SENT_FILE = os.path.join(DATA_DIR, 'sent_predictions.json')
 
-FINISHED_STATUSES = {'FT', 'AET', 'PEN'}
+FINISHED_STATUSES = {'FT', 'AET', 'PEN', 'FINISHED'}
 
 
 class StatsRepo:
@@ -23,37 +24,47 @@ class StatsRepo:
     @staticmethod
     def _fixture_data(match):
         if not isinstance(match, dict):
-            return {}, {}, {}, None, None
+            return {}, {}, None, None, None
 
-        fixture = match.get('fixture') or {}
-        teams = match.get('teams') or {}
-        goals = match.get('goals') or {}
-        score = match.get('score') or {}
-        fulltime = score.get('fulltime') or score.get('full') or {}
+        # football-data.org formatı
+        if "homeTeam" in match or "utcDate" in match:
+            teams = {
+                "home": match.get("homeTeam") or {},
+                "away": match.get("awayTeam") or {},
+            }
+            fixture = {"date": match.get("utcDate")}
+            score = match.get("score") or {}
+            fulltime = score.get("fullTime") or {}
+            return (
+                teams,
+                fixture,
+                match.get("status"),
+                fulltime.get("home"),
+                fulltime.get("away"),
+            )
 
-        home_goals = goals.get('home')
-        away_goals = goals.get('away')
-
+        # Köhnə API-Football formatı
+        fixture = match.get("fixture") or {}
+        teams = match.get("teams") or {}
+        goals = match.get("goals") or {}
+        score = match.get("score") or {}
+        fulltime = score.get("fulltime") or score.get("full") or {}
+        home_goals = goals.get("home")
+        away_goals = goals.get("away")
         if home_goals is None:
-            home_goals = fulltime.get('home')
+            home_goals = fulltime.get("home")
         if away_goals is None:
-            away_goals = fulltime.get('away')
-
-        status = (fixture.get('status') or {}).get('short')
+            away_goals = fulltime.get("away")
+        status = (fixture.get("status") or {}).get("short")
         return teams, fixture, status, home_goals, away_goals
 
     @classmethod
     def _is_finished(cls, match):
         teams, fixture, status, home_goals, away_goals = cls._fixture_data(match)
-
         if home_goals is None or away_goals is None:
             return False
-
-        # If the provider supplies a status, require a completed match.
         if status is not None:
             return status in FINISHED_STATUSES
-
-        # Fallback for providers without a status field.
         return True
 
     def _safe_fetch_team_fixtures(
@@ -61,21 +72,28 @@ class StatsRepo:
     ) -> List[dict]:
         if not self.api or not getattr(self.api, 'key', None):
             return []
-
         if home_away not in ('all', 'home', 'away'):
             return []
 
         try:
-            url = 'https://api-football-v1.p.rapidapi.com/v3/fixtures'
-            # Fetch extra fixtures because some may be unfinished or filtered out.
             requested = max(limit * 3, limit)
-            response = self.api.fetch_fixtures_paginated(
-                url,
-                params={'team': team_id, 'last': requested}
-            )
+            if getattr(self.api, "provider", "") == "football-data.org":
+                url = f"https://api.football-data.org/v4/teams/{team_id}/matches"
+                today = date.today()
+                date_from = (today - timedelta(days=730)).isoformat()
+                date_to = today.isoformat()
+                response = self.api.fetch_fixtures_paginated(
+                    url,
+                    params={"status": "FINISHED", "dateFrom": date_from, "dateTo": date_to, "limit": 100},
+                )
+            else:
+                url = 'https://api-football-v1.p.rapidapi.com/v3/fixtures'
+                response = self.api.fetch_fixtures_paginated(
+                    url, params={'team': team_id, 'last': requested}
+                )
 
             if isinstance(response, dict):
-                response = response.get('response') or []
+                response = response.get('matches') or response.get('response') or []
             if not isinstance(response, list):
                 return []
 
@@ -87,7 +105,6 @@ class StatsRepo:
                 teams, _, _, _, _ = self._fixture_data(match)
                 home = teams.get('home') or {}
                 away = teams.get('away') or {}
-
                 home_id = home.get('id')
                 away_id = away.get('id')
 

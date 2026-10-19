@@ -11,6 +11,7 @@ load_dotenv()
 
 from app.football_api import FootballAPI, FootballAPIError
 from app.stats_repo import StatsRepo
+from app.predictor import match_result_probabilities
 from app.evaluator import evaluate_match_for_predictions
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -107,82 +108,75 @@ def save_cached_fixtures(fixtures):
 
 def fetch_upcoming_fixtures(api, config):
     cached = load_cached_fixtures()
-    if cached is not None:
+    if cached:
         return cached
 
     if not api.key:
         raise FootballAPIError("FOOTBALL_API_KEY konfiqurasiya edilməyib.")
 
-    selected_names = set(config["top_leagues"])
-    selected_ids = {
-        league_id
-        for league_id, name in LEAGUES.items()
-        if name in selected_names
-    }
-
-    if not selected_ids:
-        return []
-
-    url = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
     today = datetime.now().date()
     now = datetime.now(timezone.utc)
+    url = "https://api.football-data.org/v4/matches"
+
+    try:
+        data = api._request_with_retries(
+            url,
+            params={
+                "dateFrom": today.isoformat(),
+                "dateTo": (today + timedelta(days=2)).isoformat(),
+            },
+            max_retries=3,
+        )
+    except FootballAPIError as exc:
+        print(f"Oyunları alma xətası: {exc}")
+        return []
+
     fixtures_by_id = {}
+    priority_codes = {"PL", "CL", "EL", "PD", "BL1", "SA"}
 
-    # Date-based requests reduce API calls compared with querying every league.
-    for offset in range(3):
-        match_date = (today + timedelta(days=offset)).isoformat()
-        try:
-            data = api._request_with_retries(
-                url,
-                params={"date": match_date, "timezone": "Asia/Baku"},
-                max_retries=3,
-            )
-        except FootballAPIError as exc:
-            print(f"{match_date} oyunlarını alma xətası: {exc}")
+    for item in data.get("matches", []):
+        if not isinstance(item, dict):
             continue
 
-        if data.get("errors"):
-            print(f"API {match_date} üçün xəta qaytardı: {data['errors']}")
+        competition = item.get("competition") or {}
+        home = item.get("homeTeam") or {}
+        away = item.get("awayTeam") or {}
+        kickoff_text = item.get("utcDate")
+        kickoff = parse_kickoff(kickoff_text)
+        status = item.get("status")
+
+        if not item.get("id") or not home.get("id") or not away.get("id"):
+            continue
+        if kickoff is None or kickoff <= now:
+            continue
+        if status not in ("SCHEDULED", "TIMED"):
             continue
 
-        for item in data.get("response") or []:
-            league = item.get("league") or {}
-            league_id = league.get("id")
-            if league_id not in selected_ids:
-                continue
-
-            fixture = item.get("fixture") or {}
-            teams = item.get("teams") or {}
-            home = teams.get("home") or {}
-            away = teams.get("away") or {}
-            kickoff = parse_kickoff(fixture.get("date"))
-            status = (fixture.get("status") or {}).get("short")
-
-            if not fixture.get("id") or not home.get("id") or not away.get("id"):
-                continue
-            if kickoff is None or kickoff <= now:
-                continue
-            if status not in ("NS", "TBD"):
-                continue
-
-            normalized = {
-                "fixture_id": fixture["id"],
-                "home_team_id": home["id"],
-                "away_team_id": away["id"],
-                "home_team": home.get("name") or "Ev komandası",
-                "away_team": away.get("name") or "Səfər komandası",
-                "league": LEAGUES[league_id],
-                "kickoff": fixture.get("date"),
-            }
-            fixtures_by_id[fixture["id"]] = normalized
+        code = competition.get("code") or ""
+        name = competition.get("name") or "Digər liqa"
+        normalized = {
+            "fixture_id": item["id"],
+            "home_team_id": home["id"],
+            "away_team_id": away["id"],
+            "home_team": home.get("name") or "Ev komandası",
+            "away_team": away.get("name") or "Səfər komandası",
+            "league": name,
+            "league_code": code,
+            "kickoff": kickoff_text,
+            "league_priority": 0 if code in priority_codes else 1,
+        }
+        fixtures_by_id[item["id"]] = normalized
 
     fixtures = sorted(
         fixtures_by_id.values(),
-        key=lambda match: parse_kickoff(match["kickoff"]) or now,
+        key=lambda m: (
+            m["league_priority"],
+            parse_kickoff(m["kickoff"]) or now,
+        ),
     )
     save_cached_fixtures(fixtures)
+    print(f"Yaxın 3 gündə tapılan oyun sayı: {len(fixtures)}")
     return fixtures
-
 
 def build_prediction_message(api, config):
     fixtures = fetch_upcoming_fixtures(api, config)
@@ -217,6 +211,26 @@ def build_prediction_message(api, config):
             ("btts_candidate", "btts_prob", "QOL-QOL (BTTS)"),
         ]
 
+        result_probs = match_result_probabilities(
+            result.get("lambda_home"),
+            result.get("lambda_away"),
+        )
+        if result_probs:
+            result_labels = {
+                "home_win": "1 — Ev sahibi qələbəsi",
+                "draw": "X — Heç-heçə",
+                "away_win": "2 — Səfər qələbəsi",
+            }
+            best_key = max(result_probs, key=result_probs.get)
+            best_probability = result_probs[best_key]
+            if 0.40 <= best_probability <= MAX_DISPLAY_PROBABILITY:
+                selections.append((
+                    "result_candidate",
+                    "result_probability",
+                    result_labels[best_key],
+                ))
+                result["result_candidate"] = True
+                result["result_probability"] = best_probability
         for candidate_key, probability_key, market_name in selections:
             probability = result.get(probability_key)
             if not result.get(candidate_key) or probability is None:
@@ -264,7 +278,7 @@ def main():
         print("Database initialization requested.")
         return
 
-    from telegram.ext import Updater, CommandHandler
+    from telegram.ext import Application, CommandHandler
 
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
@@ -272,19 +286,18 @@ def main():
 
     api = FootballAPI()
     config = load_config()
-    updater = Updater(token=token, use_context=True)
-    dispatcher = updater.dispatcher
+    application = Application.builder().token(token).build()
 
-    def start(update, context):
-        update.effective_message.reply_text(
+    async def start(update, context):
+        await update.effective_message.reply_text(
             "Salam! Mən Qol Ovçusuyam ⚽\n"
             "/prematch — oyunöncəsi analiz\n"
             "/predictions — uyğun proqnozlar\n"
             "/help — kömək"
         )
 
-    def help_cmd(update, context):
-        update.effective_message.reply_text(
+    async def help_cmd(update, context):
+        await update.effective_message.reply_text(
             "Əmrlər:\n"
             "/prematch — yaxın oyunları analiz et\n"
             "/predictions — uyğun proqnozları göstər\n\n"
@@ -292,9 +305,9 @@ def main():
             "Kifayət qədər statistika olmadıqda seçim verilmir."
         )
 
-    def predictions(update, context):
+    async def predictions(update, context):
         message = update.effective_message
-        message.reply_text("Oyunlar və statistikalar yoxlanılır...")
+        await message.reply_text("Oyunlar və statistikalar yoxlanılır...")
         try:
             output = build_prediction_message(api, config)
         except Exception as exc:
@@ -303,22 +316,21 @@ def main():
                 "Analiz alınmadı. API açarını, internet bağlantısını "
                 "və API limitini yoxla."
             )
-        message.reply_text(output)
+        await message.reply_text(output)
 
-    def live(update, context):
-        update.effective_message.reply_text(
+    async def live(update, context):
+        await update.effective_message.reply_text(
             "Bu bot hazırda yalnız oyunöncəsi analiz üçündür."
         )
 
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("help", help_cmd))
-    dispatcher.add_handler(CommandHandler("prematch", predictions))
-    dispatcher.add_handler(CommandHandler("predictions", predictions))
-    dispatcher.add_handler(CommandHandler("live", live))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_cmd))
+    application.add_handler(CommandHandler("prematch", predictions))
+    application.add_handler(CommandHandler("predictions", predictions))
+    application.add_handler(CommandHandler("live", live))
 
     print("Qol Ovçusu botu başladılır...")
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 
 if __name__ == "__main__":

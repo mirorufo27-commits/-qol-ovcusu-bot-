@@ -147,3 +147,42 @@ def corner_over_probability(*args, **kwargs):
 def team_corner_probability(*args, **kwargs):
     return None
     
+
+
+def match_result_probabilities(
+    lambda_home: Optional[float],
+    lambda_away: Optional[float],
+) -> Optional[Dict[str, float]]:
+    """Return 1/X/2 probabilities from independent Poisson goal rates."""
+    if lambda_home is None or lambda_away is None:
+        return None
+    if lambda_home < 0 or lambda_away < 0:
+        return None
+
+    max_goals = 12
+    home_win = 0.0
+    draw = 0.0
+    away_win = 0.0
+
+    home_probs = [poisson_pmf(k, lambda_home) for k in range(max_goals + 1)]
+    away_probs = [poisson_pmf(k, lambda_away) for k in range(max_goals + 1)]
+
+    for h, hp in enumerate(home_probs):
+        for a, ap in enumerate(away_probs):
+            p = hp * ap
+            if h > a:
+                home_win += p
+            elif h == a:
+                draw += p
+            else:
+                away_win += p
+
+    total = home_win + draw + away_win
+    if total <= 0:
+        return None
+
+    return {
+        "home_win": home_win / total,
+        "draw": draw / total,
+        "away_win": away_win / total,
+    }
