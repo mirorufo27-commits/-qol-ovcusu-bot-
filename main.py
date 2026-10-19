@@ -178,7 +178,7 @@ def fetch_upcoming_fixtures(api, config):
     print(f"Yaxın 3 gündə tapılan oyun sayı: {len(fixtures)}")
     return fixtures
 
-def build_prediction_message(api, config):
+def build_prediction_message(api, config, repo=None):
     fixtures = fetch_upcoming_fixtures(api, config)
     if not fixtures:
         return (
@@ -187,7 +187,8 @@ def build_prediction_message(api, config):
             "və ya API məlumatı alınmadı. Bir qədər sonra yenidən yoxla."
         )
 
-    repo = StatsRepo(api)
+    if repo is None:
+        repo = StatsRepo(api)
     lines = ["⚽ QOL OVÇUSU — OYUNÖNCƏSİ ANALİZ", ""]
     shown = 0
     analyzed = 0
@@ -286,6 +287,7 @@ def main():
 
     api = FootballAPI()
     config = load_config()
+    repo = StatsRepo(api)
     application = Application.builder().token(token).build()
 
     async def start(update, context):
@@ -309,7 +311,7 @@ def main():
         message = update.effective_message
         await message.reply_text("Oyunlar və statistikalar yoxlanılır...")
         try:
-            output = build_prediction_message(api, config)
+            output = build_prediction_message(api, config, repo)
         except Exception as exc:
             print(f"Prediction error: {exc}")
             output = (

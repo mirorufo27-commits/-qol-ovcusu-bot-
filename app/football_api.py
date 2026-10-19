@@ -27,7 +27,7 @@ class FootballAPI:
                 if r.status_code == 429:
                     if attempt + 1 < max_retries:
                         try:
-                            wait = min(3, max(1, int(r.headers.get("Retry-After", "1"))))
+                            wait = max(1, int(r.headers.get("Retry-After", "1")))
                         except ValueError:
                             wait = 1
                         time.sleep(wait)
